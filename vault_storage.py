@@ -37,7 +37,7 @@ def _get_user_vault_path():
     return user_dir
 
 def _check_valid_secret_name(secret_name):
-    """Проверяет вводимое название secret'а во избежание path traversal."""
+    """Проверяет вводимое название secret'а во избежание ../../path traversal."""
     if not re.match(r"^[a-zA-Z0-9_-]+$", secret_name):
         print("[-] Ошибка: Недопустимое имя секрета!", file=sys.stderr)
         return True # Возвращаем True, если есть ошибка
@@ -113,7 +113,7 @@ def import_secrets(secret_name):
         return None
 
 def print_storage_contents(secret_name):
-    """Выводит содержимое одного стораджа в красивом формате."""
+    """Выводит содержимое одного хранилища в красивом формате."""
     secrets = import_secrets(secret_name)
     if secrets is not None:
         print("_______________________________________")
@@ -139,8 +139,8 @@ if __name__ == "__main__":
     parser.add_argument("-E", dest="export_kv", help="Полностью перезаписать данные одной парой (формат 'ключ:значение')")
     
     # Новые флаги для отображения
-    parser.add_argument("-sS", "--show-secrets", dest="show_secrets", nargs="?", const="ALL", help="Показать содержимое стораджа (укажите имя или оставьте пустым для всех)")
-    parser.add_argument("-sF", "--show-files", dest="show_files", action="store_true", help="Показать все доступные стораджи юзера")
+    parser.add_argument("-sS", "--show-secrets", dest="show_secrets", nargs="?", const="ALL", help="Показать содержимое хранилища (укажите имя или оставьте пустым для всех)")
+    parser.add_argument("-sF", "--show-files", dest="show_files", action="store_true", help="Показать все доступные хранилища юзера")
 
     args = parser.parse_args()
 
