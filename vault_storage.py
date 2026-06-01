@@ -4,130 +4,102 @@ import json
 import getpass
 import stat
 import re
+import argparse
+
 # Главная директория хранилища
 BASE_VAULT_DIR = "/opt/vaultstorage"
 
+# ANSI-цвета для красивого вывода
+COLOR_CYAN = "\033[96m"
+COLOR_RESET = "\033[0m"
 
 def _get_user_vault_path():
-    """
-    Внутренняя функция: определяет текущего пользователя и
-    безопасно подготавливает его персональную директорию.
-    """
-    # 1. Узнаем, от чьего имени запущен скрипт
-    current_user = getpass.getuser()
+    """Определяет текущего пользователя и безопасно подготавливает его директорию."""
+    current_user = os.environ.get("USER") or os.environ.get("LOGNAME")
+    if not current_user:
+        current_user = getpass.getuser()
 
-    # 2. Формируем путь: /opt/vaultstorage/имя пользователя запустившего скрипт с этой либой
+    if not current_user or not re.match(r"^[a-zA-Z0-9_-]+$", current_user):
+        print("[-] Ошибка: Не удалось безопасно определить текущего пользователя ОС.", file=sys.stderr)
+        sys.exit(1)
+
     user_dir = os.path.join(BASE_VAULT_DIR, current_user)
 
-    # 3. Безопасное создание директории
     if not os.path.exists(user_dir):
         try:
-            # Создаем папку. exist_ok=True предотвращает ошибку, если папка появится в процессе
             os.makedirs(user_dir, exist_ok=True)
-
-            # ВАЖНО: Принудительно ставим права 700 (drwx------).
-            # Мы делаем это явно, так как дефолтный системный umask может попытаться дать права 755
             os.chmod(user_dir, 0o700)
         except PermissionError:
-            print(f"[!] Ошибка: Нет прав на создание директории {user_dir}. Проверьте права на {BASE_VAULT_DIR}",
-                  file=sys.stderr)
+            print(f"[!] Ошибка: Нет прав на создание директории {user_dir}. Проверьте права на {BASE_VAULT_DIR}", file=sys.stderr)
             sys.exit(1)
 
     return user_dir
 
 def _check_valid_secret_name(secret_name):
-    """
-    Внутренняя функция: нужна во избежание ../../path traversal
-    проверяет вводимое название secret'а
-    """
+    """Проверяет вводимое название secret'а во избежание path traversal."""
     if not re.match(r"^[a-zA-Z0-9_-]+$", secret_name):
         print("[-] Ошибка: Недопустимое имя секрета!", file=sys.stderr)
-        return 1
-
+        return True # Возвращаем True, если есть ошибка
+    return False
 
 def export_secrets(secret_name, data_dict):
-    """
-    Сохраняет словарь в персональный, защищённый JSON-файл.
-    :param secret_name: Имя секрета (например, 's3_keys' -> превратится в s3_keys.json)
-    :param data_dict: Словарь с данными для сохранения
-    """
-    user_dir = _get_user_vault_path()
+    """Сохраняет словарь в персональный, защищённый JSON-файл."""
     if _check_valid_secret_name(secret_name):
-        return None
+        return False
+    user_dir = _get_user_vault_path()
     file_path = os.path.join(user_dir, f"{secret_name}.json")
 
     try:
-        # Пишем данные в файл
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(data_dict, f, ensure_ascii=False, indent=4)
-
-        # Принудительно выставляем права 600 (-rw-------)
         os.chmod(file_path, 0o600)
         print(f"[+] Секрет '{secret_name}' успешно защищен и сохранен.")
-
+        return True
     except Exception as e:
         print(f"[-] Ошибка записи секрета: {e}", file=sys.stderr)
-
+        return False
 
 def append_secrets(secret_name, data_dict):
-    """
-    Дописывает словарь уже существующий JSON-файл.
-    :param secret_name: Имя секрета
-    :param data_dict: Словарь с данными которые должны быть добавлены
-    """
-    user_dir = _get_user_vault_path()
+    """Дописывает словарь в уже существующий JSON-файл."""
     if _check_valid_secret_name(secret_name):
-        return None
+        return False
+    user_dir = _get_user_vault_path()
     file_path = os.path.join(user_dir, f"{secret_name}.json")
 
-
-    # Проверяем достуупность файла и отсутствие его компроментации
     if not os.path.exists(file_path):
-        print(f"Файл {file_path} отсутствует.")
-        return None
-    else:
-        file_stat = os.stat(file_path)
-        permissions = stat.S_IMODE(file_stat.st_mode)
-        if permissions != 0o600:
-            print(f"[!] ВНИМАНИЕ: Файл {file_path} имеет небезопасные права: {oct(permissions)}. Чтение заблокировано!",
-                  file=sys.stderr)
-            return None
+        print(f"[-] Файл {file_path} отсутствует.", file=sys.stderr)
+        return False
 
-    # Делаем объеденённый словарь из уже существующих данных и данных которые мы хотим записать
-    # Если встречается ключ, который есть и в существующих и во вводимых данных, то значение у ключа будет установленно из новых данных
-    data_dict = import_secrets(secret_name) | data_dict
-    #Пишем данные уже существующей функцией
-    export_secrets(secret_name, data_dict)
+    file_stat = os.stat(file_path)
+    permissions = stat.S_IMODE(file_stat.st_mode)
+    if permissions != 0o600:
+        print(f"[!] ВНИМАНИЕ: Файл {file_path} имеет небезопасные права: {oct(permissions)}. Модификация заблокирована!", file=sys.stderr)
+        return False
 
+    existing_data = import_secrets(secret_name)
+    if existing_data is None:
+        return False
 
-
+    # Обновляем существующий словарь новыми данными (безопасно для старых версий Python)
+    existing_data.update(data_dict)
+    return export_secrets(secret_name, existing_data)
 
 def import_secrets(secret_name):
-    """
-    Извлекает данные из персонального JSON-файла.
-    :param secret_name: Имя секрета для чтения
-    :return: Словарь с данными или None в случае ошибки
-    """
-    user_dir = _get_user_vault_path()
+    """Извлекает данные из персонального JSON-файла."""
     if _check_valid_secret_name(secret_name):
         return None
+    user_dir = _get_user_vault_path()
     file_path = os.path.join(user_dir, f"{secret_name}.json")
 
     if not os.path.exists(file_path):
         print(f"[-] Секрет '{secret_name}' не найден.", file=sys.stderr)
         return None
 
-    # --- БЛОК АУДИТА БЕЗОПАСНОСТИ ---
-    # Проверяем, не скомпрометированы ли права на файл перед его чтением
     file_stat = os.stat(file_path)
-    permissions = stat.S_IMODE(file_stat.st_mode)  # Получаем только биты прав
-
-    # 0o600 в десятеричной системе - это 384. Если права шире, бьем тревогу.
+    permissions = stat.S_IMODE(file_stat.st_mode)
     if permissions != 0o600:
-        print(f"[!] ВНИМАНИЕ: Файл {file_path} имеет небезопасные права: {oct(permissions)}. Чтение заблокировано!",
-              file=sys.stderr)
+        print(f"[!] ВНИМАНИЕ: Файл {file_path} имеет небезопасные права: {oct(permissions)}. Чтение заблокировано!", file=sys.stderr)
         return None
-    # --------------------------------
 
     try:
         with open(file_path, "r", encoding="utf-8") as f:
@@ -139,38 +111,98 @@ def import_secrets(secret_name):
         print(f"[-] Ошибка импорта секрета: {e}", file=sys.stderr)
         return None
 
+def print_storage_contents(secret_name):
+    """Выводит содержимое одного стораджа в красивом формате."""
+    secrets = import_secrets(secret_name)
+    if secrets is not None:
+        print("_______________________________________")
+        print(f"{COLOR_CYAN}{secret_name}{COLOR_RESET}")
+        for k, v in secrets.items():
+            print(f"{k}:{v}")
 
-
-
-
-
-# Делаем комфортное консольное взаимодействие
+# --- CLI ИНТЕРФЕЙС ---
 if __name__ == "__main__":
-    import argparse
-
-    # Создаем парсер аргументов командной строки
     parser = argparse.ArgumentParser(
-        description="VaultStorage CLI — инструмент безопасного управления секретами."
+        description="VaultStorage CLI — инструмент безопасного управления секретами.",
+        formatter_class=argparse.RawTextHelpFormatter
     )
 
-    # Первым обязательным аргументом всегда идет имя хранилища (секрета)
-    parser.add_argument("secret_name", help="Имя файла секрета (например, 'APIs')")
+    # Имя секрета теперь опционально (чтобы работали флаги -sS и -sF без него)
+    parser.add_argument("secret_name", nargs="?", help="Имя файла секрета (например, 'APIs')")
 
-    # Второй аргумент — опциональный (ключ для чтения, если запускаем без флагов)
-    parser.add_argument("key", nargs="?", help="Ключ, значение которого нужно прочитать")
-
-    # Группа флагов для модификации данных (флаги не должны конфликтовать друг с другом)
+    # Основные флаги
+    parser.add_argument("-i", dest="import_keys", nargs="+", help="Получить значения по ключам (через пробел или запятую)\nПример: vaultstorage google -i API, token")
     parser.add_argument("-a", dest="append_file", help="Дописать/обновить данные из указанного JSON-файла")
-    parser.add_argument("-A", dest="append_kv", help="Добавить/обновить одну пару 'ключ:значение' напрямую")
+    parser.add_argument("-A", dest="append_kv", help="Добавить/обновить одну пару (формат 'ключ:значение')")
     parser.add_argument("-e", dest="export_file", help="Полностью перезаписать данные из указанного JSON-файла")
-    parser.add_argument("-E", dest="export_kv", help="Полностью перезаписать данные одной парой 'ключ:значение'")
+    parser.add_argument("-E", dest="export_kv", help="Полностью перезаписать данные одной парой (формат 'ключ:значение')")
+    
+    # Новые флаги для отображения
+    parser.add_argument("-sS", "--show-secrets", dest="show_secrets", nargs="?", const="ALL", help="Показать содержимое стораджа (укажите имя или оставьте пустым для всех)")
+    parser.add_argument("-sF", "--show-files", dest="show_files", action="store_true", help="Показать все доступные стораджи юзера")
 
-    # Разбираем пришедшие аргументы
     args = parser.parse_args()
 
-    # --- ЛОГИКА ОБРАБОТКИ ФЛАГОВ ---
+    user_dir = _get_user_vault_path()
 
-    # 1. Флаг -e: Полная перезапись из файла
+    # 1. Показать все файлы (-sF)
+    if args.show_files:
+        files = [f for f in os.listdir(user_dir) if f.endswith('.json')]
+        if not files:
+            print("[-] У вас пока нет сохраненных стораджей.")
+        else:
+            for f in files:
+                print(f.replace('.json', ''))
+        sys.exit(0)
+
+    # 2. Показать содержимое секретов (-sS)
+    if args.show_secrets:
+        target = args.show_secrets
+        # Обработка ситуации: vaultstorage google -sS
+        if target == "ALL" and args.secret_name:
+            target = args.secret_name
+
+        if target == "ALL":
+            files = [f for f in os.listdir(user_dir) if f.endswith('.json')]
+            if not files:
+                print("[-] У вас пока нет сохраненных стораджей.")
+            else:
+                for f in files:
+                    print_storage_contents(f.replace('.json', ''))
+        else:
+            print_storage_contents(target)
+        sys.exit(0)
+
+    # Если мы дошли сюда, то для всех остальных операций нужно имя секрета
+    if not args.secret_name:
+        parser.print_help()
+        sys.exit(1)
+
+    # 3. Импорт конкретных ключей (-i)
+    if args.import_keys:
+        secrets = import_secrets(args.secret_name)
+        if secrets is None:
+            sys.exit(1)
+
+        # Парсим ключи (обрабатываем как запятые, так и пробелы)
+        raw_keys = " ".join(args.import_keys)
+        keys_to_fetch = [k.strip() for k in raw_keys.replace(',', ' ').split() if k.strip()]
+
+        if len(keys_to_fetch) == 1:
+            key = keys_to_fetch[0]
+            if key in secrets:
+                print(secrets[key])
+            else:
+                print(f"[-] Ключ '{key}' не найден.", file=sys.stderr)
+        else:
+            for key in keys_to_fetch:
+                if key in secrets:
+                    print(f"{key}: {secrets[key]}")
+                else:
+                    print(f"[-] Ключ '{key}' не найден.", file=sys.stderr)
+        sys.exit(0)
+
+    # 4. Модификация данных (-e, -E, -a, -A)
     if args.export_file:
         try:
             with open(args.export_file, "r", encoding="utf-8") as f:
@@ -181,17 +213,15 @@ if __name__ == "__main__":
             print(f"[-] Ошибка импорта из файла {args.export_file}: {e}", file=sys.stderr)
             sys.exit(1)
 
-    # 2. Флаг -E: Полная перезапись одной парой Ключ:Значение
     elif args.export_kv:
         if ":" in args.export_kv:
-            k, v = args.export_kv.split(":", 1)  # Сплитим только по первому двоеточию
+            k, v = args.export_kv.split(":", 1)
             export_secrets(args.secret_name, {k.strip(): v.strip()})
             sys.exit(0)
         else:
             print("[-] Ошибка: Формат флага -E должен быть 'ключ:значение'", file=sys.stderr)
             sys.exit(1)
 
-    # 3. Флаг -a: Дозапись/обновление из файла
     elif args.append_file:
         try:
             with open(args.append_file, "r", encoding="utf-8") as f:
@@ -202,7 +232,6 @@ if __name__ == "__main__":
             print(f"[-] Ошибка дозаписи из файла {args.append_file}: {e}", file=sys.stderr)
             sys.exit(1)
 
-    # 4. Флаг -A: Дозапись/обновление одной пары Ключ:Значение
     elif args.append_kv:
         if ":" in args.append_kv:
             k, v = args.append_kv.split(":", 1)
@@ -212,23 +241,10 @@ if __name__ == "__main__":
             print("[-] Ошибка: Формат флага -A должен быть 'ключ:значение'", file=sys.stderr)
             sys.exit(1)
 
-    # 5. Режим чтения (если никакие флаги модификации не переданы)
+    # 5. Если передано только имя секрета, выводим весь JSON
     else:
-        if args.key:
-            # Читаем секрет целиком
-            secrets = import_secrets(args.secret_name)
-            if secrets and args.key in secrets:
-                # Выводим ТОЛЬКО значение ключа (для Bash)
-                print(secrets[args.key])
-                sys.exit(0)
-            else:
-                print(f"[-] Ключ '{args.key}' или секрет '{args.secret_name}' не найден.", file=sys.stderr)
-                sys.exit(1)
-        else:
-            # Если передано только имя секрета без флагов и без конкретного ключа,
-            # выведем весь JSON (полезно для быстрого просмотра глазами)
-            secrets = import_secrets(args.secret_name)
-            if secrets:
-                print(json.dumps(secrets, ensure_ascii=False, indent=4))
-                sys.exit(0)
-            sys.exit(1)
+        secrets = import_secrets(args.secret_name)
+        if secrets:
+            print(json.dumps(secrets, ensure_ascii=False, indent=4))
+            sys.exit(0)
+        sys.exit(1)
