@@ -150,7 +150,7 @@ if __name__ == "__main__":
     if args.show_files:
         files = [f for f in os.listdir(user_dir) if f.endswith('.json')]
         if not files:
-            print("[-] У вас пока нет сохраненных стораджей.")
+            print("[-] У вас пока нет сохраненных хранилищ.")
         else:
             for f in files:
                 print(f.replace('.json', ''))
@@ -166,7 +166,7 @@ if __name__ == "__main__":
         if target == "ALL":
             files = [f for f in os.listdir(user_dir) if f.endswith('.json')]
             if not files:
-                print("[-] У вас пока нет сохраненных стораджей.")
+                print("[-] У вас пока нет сохраненных хранилищ.")
             else:
                 for f in files:
                     print_storage_contents(f.replace('.json', ''))
