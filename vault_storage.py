@@ -154,6 +154,7 @@ if __name__ == "__main__":
         else:
             for f in files:
                 print(f.replace('.json', ''))
+            print("_______________________________________")
         sys.exit(0)
 
     # 2. Показать содержимое секретов (-sS)
@@ -172,6 +173,7 @@ if __name__ == "__main__":
                     print_storage_contents(f.replace('.json', ''))
         else:
             print_storage_contents(target)
+        print("_______________________________________")
         sys.exit(0)
 
     # Если мы дошли сюда, то для всех остальных операций нужно имя секрета
